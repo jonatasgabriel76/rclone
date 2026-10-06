@@ -17,8 +17,7 @@ import (
 )
 
 const (
-	maxUploadDelay           = 5 * time.Minute // max delay between upload attempts
-	temporaryWriteBackDelay  = 100 * 365 * 24 * time.Hour
+    maxUploadDelay = 5 * time.Minute
 )
 
 func isTemporaryFile(name string) bool {
@@ -147,9 +146,6 @@ func (wb *WriteBack) _newItem(id Handle, name string, size int64) *writeBackItem
 	wb.SetID(&id)
 
 	expiry := wb._newExpiry()
-	if isTemporaryFile(name) {
-		expiry = time.Now().Add(temporaryWriteBackDelay)
-	}
 
 	wbItem := &writeBackItem{
 		name:   name,
@@ -270,6 +266,10 @@ func (wb *WriteBack) SetID(pid *Handle) {
 // If modified is false then it doesn't cancel a pending upload if
 // there is one as there is no need.
 func (wb *WriteBack) Add(id Handle, name string, size int64, modified bool, putFn PutFn) Handle {
+	if isTemporaryFile(name) {
+		return 0
+	}
+
 	wb.mu.Lock()
 	defer wb.mu.Unlock()
 
@@ -333,6 +333,12 @@ func (wb *WriteBack) Rename(id Handle, name string) {
 	if !ok {
 		return
 	}
+
+	if isTemporaryFile(name) {
+		wb._remove(id)
+		return
+	}
+
 	if wbItem.uploading {
 		// We are uploading already so cancel the upload
 		wb._cancelUpload(wbItem)
@@ -462,6 +468,12 @@ func (wb *WriteBack) processItems(ctx context.Context) {
 		}
 		// Pop the item, mark as uploading and start the uploader
 		wbItem = wb._popItem()
+
+		if isTemporaryFile(wbItem.name) {
+			wb._delItem(wbItem)
+			continue
+		}
+
 		//fs.Debugf(wbItem.name, "uploading = true %p item %p", wbItem, wbItem.item)
 		wbItem.uploading = true
 		wb.uploads++
