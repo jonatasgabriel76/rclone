@@ -715,6 +715,44 @@ func TestRWCacheRename(t *testing.T) {
 	assert.True(t, vfs.cache.Exists("i_was_renamed"))
 }
 
+func TestRWCacheFFSTempRename(t *testing.T) {
+	opt := vfscommon.Opt
+	opt.CacheMode = vfscommon.CacheModeFull
+	opt.WriteBack = writeBackDelay
+	opt.SkipFFSTmpUpload = true
+	r, vfs := newTestVFSOpt(t, &opt)
+
+	const temporaryName = "upload.ffs_tmp"
+	const finalName = "upload"
+	const contents = "file contents"
+
+	h, err := vfs.OpenFile(temporaryName, os.O_WRONLY|os.O_CREATE, 0777)
+	require.NoError(t, err)
+	_, err = h.WriteString(contents)
+	require.NoError(t, err)
+	require.NoError(t, h.Close())
+
+	_, err = r.Fremote.NewObject(context.Background(), temporaryName)
+	require.ErrorIs(t, err, fs.ErrorObjectNotFound)
+
+	err = vfs.Rename(temporaryName, finalName)
+	require.NoError(t, err)
+	assert.Eventually(t, func() bool {
+		stats := vfs.cache.Stats()
+		return stats["uploadsQueued"] == 0 && stats["uploadsInProgress"] == 0
+	}, 5*time.Second, 10*time.Millisecond)
+
+	obj, err := r.Fremote.NewObject(context.Background(), finalName)
+	require.NoError(t, err)
+	assert.Equal(t, int64(len(contents)), obj.Size())
+	reader, err := obj.Open(context.Background())
+	require.NoError(t, err)
+	got, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	require.NoError(t, reader.Close())
+	assert.Equal(t, contents, string(got))
+}
+
 // Test the cache reading a file that is updated externally
 //
 // See: https://github.com/rclone/rclone/issues/6053

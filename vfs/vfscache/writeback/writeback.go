@@ -17,7 +17,7 @@ import (
 )
 
 const (
-    maxUploadDelay = 5 * time.Minute
+	maxUploadDelay = 5 * time.Minute
 )
 
 func isTemporaryFile(name string) bool {
@@ -159,7 +159,6 @@ func (wb *WriteBack) _newItem(id Handle, name string, size int64) *writeBackItem
 	return wbItem
 }
 
-
 // add a writeBackItem to the lookup map
 //
 // call with the lock held
@@ -266,10 +265,6 @@ func (wb *WriteBack) SetID(pid *Handle) {
 // If modified is false then it doesn't cancel a pending upload if
 // there is one as there is no need.
 func (wb *WriteBack) Add(id Handle, name string, size int64, modified bool, putFn PutFn) Handle {
-	if isTemporaryFile(name) {
-		return 0
-	}
-
 	wb.mu.Lock()
 	defer wb.mu.Unlock()
 
@@ -281,11 +276,19 @@ func (wb *WriteBack) Add(id Handle, name string, size int64, modified bool, putF
 			// We are uploading already so cancel the upload
 			wb._cancelUpload(wbItem)
 		}
-		// Kick the timer on
-		wb.items._update(wbItem, wb._newExpiry())
+		wbItem.name = name
+		if wbItem.onHeap {
+			wb.items._update(wbItem, wb._newExpiry())
+		} else if !wbItem.uploading && (!wb.opt.SkipFFSTmpUpload || !isTemporaryFile(name)) {
+			wbItem.expiry = wb._newExpiry()
+			wb._pushItem(wbItem)
+		}
 	}
 	wbItem.putFn = putFn
 	wbItem.size = size
+	if wb.opt.SkipFFSTmpUpload && isTemporaryFile(name) {
+		wb._removeItem(wbItem)
+	}
 	wb._resetTimer()
 	return wbItem.id
 }
@@ -334,14 +337,15 @@ func (wb *WriteBack) Rename(id Handle, name string) {
 		return
 	}
 
-	if isTemporaryFile(name) {
-		wb._remove(id)
-		return
-	}
-
 	if wbItem.uploading {
 		// We are uploading already so cancel the upload
 		wb._cancelUpload(wbItem)
+	}
+	if wb.opt.SkipFFSTmpUpload && isTemporaryFile(name) {
+		wbItem.name = name
+		wb._removeItem(wbItem)
+		wb._resetTimer()
+		return
 	}
 
 	// Check to see if there are any uploads with the existing
@@ -353,8 +357,12 @@ func (wb *WriteBack) Rename(id Handle, name string) {
 	}
 
 	wbItem.name = name
-	// Kick the timer on
-	wb.items._update(wbItem, wb._newExpiry())
+	wbItem.expiry = wb._newExpiry()
+	if wbItem.onHeap {
+		wb.items._update(wbItem, wbItem.expiry)
+	} else {
+		wb._pushItem(wbItem)
+	}
 
 	wb._resetTimer()
 }
@@ -469,8 +477,7 @@ func (wb *WriteBack) processItems(ctx context.Context) {
 		// Pop the item, mark as uploading and start the uploader
 		wbItem = wb._popItem()
 
-		if isTemporaryFile(wbItem.name) {
-			wb._delItem(wbItem)
+		if wb.opt.SkipFFSTmpUpload && isTemporaryFile(wbItem.name) {
 			continue
 		}
 

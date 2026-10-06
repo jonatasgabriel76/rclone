@@ -22,6 +22,7 @@ func newTestWriteBack(t *testing.T) (wb *WriteBack, cancel func()) {
 	ctx, cancel := context.WithCancel(context.Background())
 	opt := vfscommon.Opt
 	opt.WriteBack = fs.Duration(100 * time.Millisecond)
+	opt.SkipFFSTmpUpload = true
 	wb = New(ctx, &opt)
 	return wb, cancel
 }
@@ -681,6 +682,53 @@ func TestWriteBackRename(t *testing.T) {
 	checkInLookup(t, wb, wbItem)
 	assert.True(t, pi2.cancelled)
 	assert.Equal(t, wbItem.name, "three")
+}
+
+func TestWriteBackFFSTempRename(t *testing.T) {
+	wb, cancel := newTestWriteBack(t)
+	defer cancel()
+	pi := newPutItem(t)
+
+	id := wb.Add(0, "file.ffs_tmp", 10, true, pi.put)
+	require.NotZero(t, id)
+
+	wb.mu.Lock()
+	wbItem := wb.lookup[id]
+	wbItem.expiry = time.Now().Add(-time.Second)
+	wb.mu.Unlock()
+	wb.processItems(wb.ctx)
+
+	select {
+	case <-pi.started:
+		t.Fatal("temporary file was uploaded")
+	default:
+	}
+
+	wb.Rename(id, "file")
+	select {
+	case <-pi.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("renamed file was not uploaded")
+	}
+	assert.Equal(t, "file", wb.lookup[id].name)
+	pi.finish(nil)
+	waitUntilNoTransfers(t, wb)
+}
+
+func TestWriteBackFFSTempUploadOptionDisabled(t *testing.T) {
+	wb, cancel := newTestWriteBack(t)
+	defer cancel()
+	wb.opt.SkipFFSTmpUpload = false
+	pi := newPutItem(t)
+
+	wb.Add(0, "file.ffs_tmp", 10, true, pi.put)
+	select {
+	case <-pi.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("temporary file was not uploaded with the option disabled")
+	}
+	pi.finish(nil)
+	waitUntilNoTransfers(t, wb)
 }
 
 // TestWriteBackRenameDuplicates checks that if we rename an entry and
