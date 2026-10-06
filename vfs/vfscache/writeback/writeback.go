@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,8 +17,13 @@ import (
 )
 
 const (
-	maxUploadDelay = 5 * time.Minute // max delay between upload attempts
+	maxUploadDelay           = 5 * time.Minute // max delay between upload attempts
+	temporaryWriteBackDelay  = 100 * 365 * 24 * time.Hour
 )
+
+func isTemporaryFile(name string) bool {
+	return strings.HasSuffix(name, ".ffs_tmp")
+}
 
 // PutFn is the interface that item provides to store the data
 type PutFn func(context.Context) error
@@ -139,10 +145,16 @@ func (wb *WriteBack) _newExpiry() time.Time {
 // call with the lock held
 func (wb *WriteBack) _newItem(id Handle, name string, size int64) *writeBackItem {
 	wb.SetID(&id)
+
+	expiry := wb._newExpiry()
+	if isTemporaryFile(name) {
+		expiry = time.Now().Add(temporaryWriteBackDelay)
+	}
+
 	wbItem := &writeBackItem{
 		name:   name,
 		size:   size,
-		expiry: wb._newExpiry(),
+		expiry: expiry,
 		delay:  time.Duration(wb.opt.WriteBack),
 		id:     id,
 	}
@@ -150,6 +162,7 @@ func (wb *WriteBack) _newItem(id Handle, name string, size int64) *writeBackItem
 	wb._pushItem(wbItem)
 	return wbItem
 }
+
 
 // add a writeBackItem to the lookup map
 //
